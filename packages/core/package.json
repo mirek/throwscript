@@ -1,6 +1,6 @@
 {
   "name": "@throwscript/core",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Checker that asserts every function that can throw documents it with a JSDoc @throws tag",
   "type": "module",
   "license": "MIT",

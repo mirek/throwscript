@@ -21,9 +21,9 @@ functions are handled implicitly: a rejection must be documented with the same
 \`@throws {ErrorType}\` tag as a synchronous throw.
 
 Muting (eslint-style):
-  // @nothrow             trailing comment mutes the throw/call on that line
-  // @nothrow-line        same as @nothrow
-  // @nothrow-next-line   mutes the following line
+  // @nothrow             mutes this line AND the next line
+  // @nothrow-line        mutes only this line
+  // @nothrow-next-line   mutes only the following line
 
 Options:
   -p, --project <tsconfig>  Check all files from the given tsconfig project
@@ -137,7 +137,7 @@ function run(): number {
     return 0;
   }
   if (parsed === "version") {
-    console.log("throwscript 0.2.0");
+    console.log("throwscript 0.3.0");
     return 0;
   }
 
