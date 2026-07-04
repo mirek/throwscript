@@ -48,12 +48,57 @@ throwscript --project path/to/tsconfig.json
 # check individual files
 throwscript src/a.ts src/b.ts
 
+# automatically insert the missing @throws tags
+throwscript --fix src/a.ts
+
 # machine-readable output
 throwscript --json src/a.ts
 ```
 
 Exit code is `1` when any function is missing a `@throws` tag, `0` otherwise.
 Unused `@throws` tags are reported as warnings (disable with `--no-unused`).
+
+## Muting with `@nothrow`
+
+Like eslint's disable comments, individual lines can be muted:
+
+```ts
+throw new CacheMissError(key); // @nothrow          — mutes this line
+throw new CacheMissError(key); // @nothrow-line     — same thing, explicit
+
+// @nothrow-next-line
+throw new CacheMissError(key); //                   — muted by the line above
+```
+
+What a muted line means depends on what is on it:
+
+- a `throw`, a propagating call, or a `Promise.reject` — that throw site is
+  ignored (it no longer needs documenting, and no longer counts toward a
+  documented tag being "used")
+- the function declaration itself (put `// @nothrow-next-line` directly above
+  the declaration, below any JSDoc) — the whole function's missing-`@throws`
+  report is muted
+- a `@throws` tag line inside a JSDoc block — the unused-tag warning for that
+  tag is muted
+
+The directives work in `//` and `/* */` comments; inside a multi-line comment
+a directive applies relative to the line it is written on.
+
+## Autofix
+
+`throwscript --fix` inserts the missing tags and then re-checks:
+
+- a function with an existing JSDoc block gets `* @throws {Type}` lines
+  appended before the closing `*/` (single-line `/** ... */` blocks are broken
+  open)
+- a function without JSDoc gets a fresh block above the declaration — for
+  arrow functions assigned to a variable, above the variable statement —
+  matching the surrounding indentation
+
+Only missing-`@throws` errors are auto-fixed; unused-tag warnings are left for
+a human to judge. Fixes are skipped for declarations that do not start their
+own line (e.g. inline callbacks), where a JSDoc block cannot be attached
+unambiguously.
 
 ## What counts as "can throw"
 
@@ -102,8 +147,10 @@ for (const d of diagnostics) {
 ```
 
 Each diagnostic carries `kind` (`missing-throws` | `unused-throws`), `severity`,
-`file`, `line`, `column`, `functionName`, the error `types` involved, and a
-human-readable `message`.
+`file`, `line`, `column`, `functionName`, the error `types` involved, a
+human-readable `message`, and — for fixable problems — a `fix` text edit.
+`applyFixes(diagnostics)` returns the patched file contents keyed by file name
+for the caller to write to disk.
 
 ## Known limitations
 
