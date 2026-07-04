@@ -3,6 +3,13 @@ import ts from "typescript";
 export type DiagnosticKind = "missing-throws" | "unused-throws";
 export type Severity = "error" | "warning";
 
+/** A text edit that resolves a diagnostic: replace [start, end) with `text`. */
+export interface ThrowsFix {
+  start: number;
+  end: number;
+  text: string;
+}
+
 export interface ThrowsDiagnostic {
   kind: DiagnosticKind;
   severity: Severity;
@@ -13,6 +20,8 @@ export interface ThrowsDiagnostic {
   /** Error type names involved (missing or unused, depending on kind). */
   types: string[];
   message: string;
+  /** Present when the diagnostic can be auto-fixed (see `applyFixes`). */
+  fix?: ThrowsFix;
 }
 
 export interface AnalyzeOptions {
@@ -65,13 +74,55 @@ export function analyzeSourceFile(
   options: AnalyzeOptions,
   diagnostics: ThrowsDiagnostic[],
 ): void {
+  const mutedLines = collectMutedLines(sourceFile);
   const visit = (node: ts.Node): void => {
     if (isCheckableFunction(node)) {
-      checkFunction(node, sourceFile, checker, options, diagnostics);
+      checkFunction(node, sourceFile, checker, options, diagnostics, mutedLines);
     }
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
+}
+
+const MUTE_DIRECTIVE = /@nothrow(-next-line|-line)?\b/g;
+
+/**
+ * Collect 0-based line numbers muted by `@nothrow` directives in comments,
+ * mirroring eslint's disable comments:
+ *
+ * - `// @nothrow` or `// @nothrow-line` mutes the line the directive is on
+ *   (use it trailing a `throw`, a call, a declaration, or a `@throws` tag)
+ * - `// @nothrow-next-line` mutes the following line
+ *
+ * Both forms also work inside block comments; inside a multi-line comment the
+ * directive applies relative to the line it is written on.
+ */
+export function collectMutedLines(sourceFile: ts.SourceFile): Set<number> {
+  const muted = new Set<number>();
+  const scanner = ts.createScanner(
+    ts.ScriptTarget.Latest,
+    /* skipTrivia */ false,
+    ts.LanguageVariant.Standard,
+    sourceFile.text,
+  );
+  let token = scanner.scan();
+  while (token !== ts.SyntaxKind.EndOfFileToken) {
+    if (
+      token === ts.SyntaxKind.SingleLineCommentTrivia ||
+      token === ts.SyntaxKind.MultiLineCommentTrivia
+    ) {
+      const commentStart = scanner.getTokenStart();
+      const commentText = scanner.getTokenText();
+      for (const match of commentText.matchAll(MUTE_DIRECTIVE)) {
+        const directiveLine = sourceFile.getLineAndCharacterOfPosition(
+          commentStart + match.index,
+        ).line;
+        muted.add(match[1] === "-next-line" ? directiveLine + 1 : directiveLine);
+      }
+    }
+    token = scanner.scan();
+  }
+  return muted;
 }
 
 function isCheckableFunction(node: ts.Node): node is ts.FunctionLikeDeclaration {
@@ -93,8 +144,16 @@ function checkFunction(
   checker: ts.TypeChecker,
   options: AnalyzeOptions,
   diagnostics: ThrowsDiagnostic[],
+  mutedLines: Set<number>,
 ): void {
-  const thrown = collectThrownTypes(fn, checker);
+  // A muted throw site (throw statement, propagating call, Promise.reject)
+  // does not count as an observable throw at all.
+  const thrown = collectThrownTypes(fn, checker).filter(
+    (t) =>
+      !mutedLines.has(
+        sourceFile.getLineAndCharacterOfPosition(t.node.getStart(sourceFile)).line,
+      ),
+  );
   const documented = getDocumentedThrows(fn, checker);
 
   const missing = thrown.filter(
@@ -111,20 +170,23 @@ function checkFunction(
   if (missingByName.size > 0) {
     const anchor = fn.name ?? fn;
     const pos = sourceFile.getLineAndCharacterOfPosition(anchor.getStart(sourceFile));
-    const types = [...missingByName.keys()];
-    diagnostics.push({
-      kind: "missing-throws",
-      severity: "error",
-      file: sourceFile.fileName,
-      line: pos.line + 1,
-      column: pos.character + 1,
-      functionName: name,
-      types,
-      message:
-        `${name} can throw ${formatTypeList(types)} but has no @throws tag for ` +
-        `${types.length === 1 ? "it" : "them"}. ` +
-        `Document with ${types.map((t) => `\`@throws {${t}}\``).join(", ")}.`,
-    });
+    if (!mutedLines.has(pos.line)) {
+      const types = [...missingByName.keys()];
+      diagnostics.push({
+        kind: "missing-throws",
+        severity: "error",
+        file: sourceFile.fileName,
+        line: pos.line + 1,
+        column: pos.character + 1,
+        functionName: name,
+        types,
+        message:
+          `${name} can throw ${formatTypeList(types)} but has no @throws tag for ` +
+          `${types.length === 1 ? "it" : "them"}. ` +
+          `Document with ${types.map((t) => `\`@throws {${t}}\``).join(", ")}.`,
+        fix: computeMissingThrowsFix(fn, sourceFile, types),
+      });
+    }
   }
 
   if (options.reportUnused !== false) {
@@ -133,6 +195,7 @@ function checkFunction(
     );
     for (const d of unused) {
       const pos = sourceFile.getLineAndCharacterOfPosition(d.tag.getStart(sourceFile));
+      if (mutedLines.has(pos.line)) continue;
       diagnostics.push({
         kind: "unused-throws",
         severity: "warning",
@@ -145,6 +208,91 @@ function checkFunction(
       });
     }
   }
+}
+
+/**
+ * Compute the text edit that documents the missing types: append `@throws`
+ * lines to the function's existing JSDoc block, or create a new block above
+ * the declaration. Returns undefined when no safe insertion point exists
+ * (e.g. an inline callback that does not start its line).
+ */
+function computeMissingThrowsFix(
+  fn: ts.FunctionLikeDeclaration,
+  sourceFile: ts.SourceFile,
+  types: string[],
+): ThrowsFix | undefined {
+  const anchor = fixAnchor(fn);
+  const text = sourceFile.text;
+
+  const anchorStart = anchor.getStart(sourceFile);
+  const anchorLine = sourceFile.getLineAndCharacterOfPosition(anchorStart).line;
+  const lineStart = sourceFile.getPositionOfLineAndCharacter(anchorLine, 0);
+  // Only fix when the declaration starts its own line — inserting a JSDoc
+  // block mid-expression would attach it to the wrong node.
+  if (text.slice(lineStart, anchorStart).trim() !== "") return undefined;
+  const indent = text.slice(lineStart, anchorStart);
+
+  const jsdoc = findLeadingJSDocRange(sourceFile, anchor);
+  if (jsdoc === undefined) {
+    const block =
+      `${indent}/**\n` +
+      types.map((t) => `${indent} * @throws {${t}}\n`).join("") +
+      `${indent} */\n`;
+    return { start: lineStart, end: lineStart, text: block };
+  }
+
+  const closeStart = jsdoc.end - 2; // position of the closing `*/`
+  const openLine = sourceFile.getLineAndCharacterOfPosition(jsdoc.pos).line;
+  const closeLine = sourceFile.getLineAndCharacterOfPosition(closeStart).line;
+  if (closeLine > openLine) {
+    // Multi-line JSDoc: insert the tags above the closing line.
+    const closeLineStart = sourceFile.getPositionOfLineAndCharacter(closeLine, 0);
+    const lines = types.map((t) => `${indent} * @throws {${t}}\n`).join("");
+    return { start: closeLineStart, end: closeLineStart, text: lines };
+  }
+  // Single-line JSDoc (`/** desc */`): break it open before the `*/`.
+  const lines =
+    `\n` +
+    types.map((t) => `${indent} * @throws {${t}}`).join("\n") +
+    `\n${indent} `;
+  return { start: closeStart, end: closeStart, text: lines };
+}
+
+/** The node a JSDoc comment for `fn` attaches to (e.g. the variable statement for an arrow). */
+function fixAnchor(fn: ts.FunctionLikeDeclaration): ts.Node {
+  if (ts.isArrowFunction(fn) || ts.isFunctionExpression(fn)) {
+    const parent = fn.parent;
+    if (
+      ts.isVariableDeclaration(parent) &&
+      ts.isVariableDeclarationList(parent.parent) &&
+      ts.isVariableStatement(parent.parent.parent)
+    ) {
+      return parent.parent.parent;
+    }
+    if (ts.isPropertyAssignment(parent) || ts.isPropertyDeclaration(parent)) {
+      return parent;
+    }
+  }
+  return fn;
+}
+
+/** The range of the JSDoc block immediately preceding `node`, if any. */
+function findLeadingJSDocRange(
+  sourceFile: ts.SourceFile,
+  node: ts.Node,
+): ts.CommentRange | undefined {
+  const ranges = ts.getLeadingCommentRanges(sourceFile.text, node.pos) ?? [];
+  for (let i = ranges.length - 1; i >= 0; i--) {
+    const range = ranges[i];
+    if (
+      range !== undefined &&
+      range.kind === ts.SyntaxKind.MultiLineCommentTrivia &&
+      sourceFile.text.startsWith("/**", range.pos)
+    ) {
+      return range;
+    }
+  }
+  return undefined;
 }
 
 /**

@@ -8,10 +8,12 @@ import {
 export {
   analyzeProgram,
   analyzeSourceFile,
+  collectMutedLines,
   type AnalyzeOptions,
   type DiagnosticKind,
   type Severity,
   type ThrowsDiagnostic,
+  type ThrowsFix,
 } from "./analyzer.js";
 
 const DEFAULT_COMPILER_OPTIONS: ts.CompilerOptions = {
@@ -61,6 +63,51 @@ export function analyzeProject(
     noEmit: true,
   });
   return analyzeProgram(program, options);
+}
+
+/**
+ * Apply the auto-fixes carried by the given diagnostics and return the new
+ * file contents, keyed by file name. Overlapping and duplicate fixes are
+ * applied once; files without fixable diagnostics are omitted. The caller is
+ * responsible for writing the results to disk.
+ */
+export function applyFixes(
+  diagnostics: ThrowsDiagnostic[],
+  readFile: (fileName: string) => string | undefined = ts.sys.readFile,
+): Map<string, string> {
+  const byFile = new Map<string, ThrowsDiagnostic["fix"][]>();
+  for (const d of diagnostics) {
+    if (d.fix === undefined) continue;
+    const fixes = byFile.get(d.file) ?? [];
+    fixes.push(d.fix);
+    byFile.set(d.file, fixes);
+  }
+
+  const results = new Map<string, string>();
+  for (const [file, fixes] of byFile) {
+    const original = readFile(file);
+    if (original === undefined) continue;
+    const seen = new Set<string>();
+    const unique = fixes
+      .filter((f): f is NonNullable<typeof f> => f !== undefined)
+      .filter((f) => {
+        const key = `${f.start}:${f.end}:${f.text}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((a, b) => b.start - a.start);
+
+    let text = original;
+    let lastApplied = Number.POSITIVE_INFINITY;
+    for (const fix of unique) {
+      if (fix.end > lastApplied) continue; // overlaps a fix already applied
+      text = text.slice(0, fix.start) + fix.text + text.slice(fix.end);
+      lastApplied = fix.start;
+    }
+    results.set(file, text);
+  }
+  return results;
 }
 
 /** Render a diagnostic as `file:line:col severity message`. */
