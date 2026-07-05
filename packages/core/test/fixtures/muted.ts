@@ -23,16 +23,31 @@ export function mutedFunction(): void {
   throw new MutedError("x");
 }
 
-// BAD: a directive only mutes its own line; the throw on the next line is
-// still reported.
-export function notMuted(): void {
+// GOOD: bare @nothrow also covers the next line, so it works on its own line
+// above the throw.
+export function mutedAboveLine(): void {
   // @nothrow
   throw new MutedError("x");
 }
 
-// BAD: muting one throw does not mute the others.
+// BAD: the explicit -line variant only mutes its own line; the throw on the
+// next line is still reported.
+export function notMuted(): void {
+  // @nothrow-line
+  throw new MutedError("x");
+}
+
+// BAD: the explicit -next-line variant does not mute its own line; a throw
+// trailing it is still reported.
+export function notMutedTrailing(): void {
+  throw new MutedError("x"); // @nothrow-next-line
+}
+
+// BAD: muting one throw does not mute the others. Note the explicit -line
+// form: a bare @nothrow here would spill onto the next line and mute the
+// OtherError throw too.
 export function partiallyMuted(kind: number): void {
-  if (kind === 1) throw new MutedError("muted"); // @nothrow
+  if (kind === 1) throw new MutedError("muted"); // @nothrow-line
   throw new OtherError("reported");
 }
 

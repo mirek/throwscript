@@ -1,6 +1,6 @@
 {
   "name": "throwscript",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Linter-like checker: every function that can throw must document it with JSDoc @throws",
   "type": "module",
   "license": "MIT",

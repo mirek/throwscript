@@ -26,12 +26,17 @@ test("@nothrow directives mute throw sites and diagnostics", () => {
   assert.equal(errorsFor(diagnostics, "mutedSameLine").length, 0);
   assert.equal(errorsFor(diagnostics, "mutedLineSuffix").length, 0);
   assert.equal(errorsFor(diagnostics, "mutedNextLine").length, 0);
+  assert.equal(errorsFor(diagnostics, "mutedAboveLine").length, 0);
   assert.equal(errorsFor(diagnostics, "mutedFunction").length, 0);
   assert.equal(errorsFor(diagnostics, "mutedCall").length, 0);
 
   const notMuted = errorsFor(diagnostics, "notMuted");
   assert.equal(notMuted.length, 1);
   assert.deepEqual(notMuted[0]?.types, ["MutedError"]);
+
+  const notMutedTrailing = errorsFor(diagnostics, "notMutedTrailing");
+  assert.equal(notMutedTrailing.length, 1);
+  assert.deepEqual(notMutedTrailing[0]?.types, ["MutedError"]);
 
   const partial = errorsFor(diagnostics, "partiallyMuted");
   assert.equal(partial.length, 1);

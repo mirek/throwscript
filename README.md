@@ -63,21 +63,30 @@ Unused `@throws` tags are reported as warnings (disable with `--no-unused`).
 Like eslint's disable comments, individual lines can be muted:
 
 ```ts
-throw new CacheMissError(key); // @nothrow          — mutes this line
-throw new CacheMissError(key); // @nothrow-line     — same thing, explicit
+throw new CacheMissError(key); // @nothrow — mutes this line (and the next)
 
-// @nothrow-next-line
-throw new CacheMissError(key); //                   — muted by the line above
+// @nothrow — works on its own line above the statement too
+throw new CacheMissError(key);
+
+throw new CacheMissError(key); // @nothrow-line — explicit: only this line
+
+// @nothrow-next-line — explicit: only the following line
+throw new CacheMissError(key);
 ```
+
+The bare `@nothrow` covers both its own line and the next, so it works
+trailing a statement or on its own line above one. Use the explicit `-line` /
+`-next-line` forms when a bare directive would spill onto a neighbouring line
+you want checked.
 
 What a muted line means depends on what is on it:
 
 - a `throw`, a propagating call, or a `Promise.reject` — that throw site is
   ignored (it no longer needs documenting, and no longer counts toward a
   documented tag being "used")
-- the function declaration itself (put `// @nothrow-next-line` directly above
-  the declaration, below any JSDoc) — the whole function's missing-`@throws`
-  report is muted
+- the function declaration itself (put `// @nothrow` or `// @nothrow-next-line`
+  directly above the declaration, below any JSDoc) — the whole function's
+  missing-`@throws` report is muted
 - a `@throws` tag line inside a JSDoc block — the unused-tag warning for that
   tag is muted
 

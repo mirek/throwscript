@@ -90,11 +90,12 @@ const MUTE_DIRECTIVE = /@nothrow(-next-line|-line)?\b/g;
  * Collect 0-based line numbers muted by `@nothrow` directives in comments,
  * mirroring eslint's disable comments:
  *
- * - `// @nothrow` or `// @nothrow-line` mutes the line the directive is on
- *   (use it trailing a `throw`, a call, a declaration, or a `@throws` tag)
- * - `// @nothrow-next-line` mutes the following line
+ * - `// @nothrow` mutes the line the directive is on AND the following line,
+ *   so it works both trailing a statement and on its own line above one
+ * - `// @nothrow-line` mutes only the line the directive is on
+ * - `// @nothrow-next-line` mutes only the following line
  *
- * Both forms also work inside block comments; inside a multi-line comment the
+ * All forms also work inside block comments; inside a multi-line comment the
  * directive applies relative to the line it is written on.
  */
 export function collectMutedLines(sourceFile: ts.SourceFile): Set<number> {
@@ -117,7 +118,8 @@ export function collectMutedLines(sourceFile: ts.SourceFile): Set<number> {
         const directiveLine = sourceFile.getLineAndCharacterOfPosition(
           commentStart + match.index,
         ).line;
-        muted.add(match[1] === "-next-line" ? directiveLine + 1 : directiveLine);
+        if (match[1] !== "-next-line") muted.add(directiveLine);
+        if (match[1] !== "-line") muted.add(directiveLine + 1);
       }
     }
     token = scanner.scan();
