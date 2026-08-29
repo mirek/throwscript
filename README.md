@@ -39,6 +39,11 @@ export async function fetchUser(id: string): Promise<User> {
 ## Usage
 
 ```sh
+pnpm add -D @mirek/throwscript-cli   # installs the `throwscript` bin
+# or run without installing: npx @mirek/throwscript-cli
+```
+
+```sh
 # check every file in the tsconfig.json project in the current directory
 throwscript
 
@@ -200,8 +205,8 @@ subclasses.
 
 | Package | Description |
 | --- | --- |
-| [`@throwscript/core`](packages/core) | The analyzer: walks a `ts.Program` and returns structured diagnostics |
-| [`throwscript`](packages/cli) | The CLI wrapper |
+| [`@mirek/throwscript-core`](packages/core) | The analyzer: walks a `ts.Program` and returns structured diagnostics |
+| [`@mirek/throwscript-cli`](packages/cli) | The `throwscript` command-line tool |
 
 ## Development
 
@@ -221,7 +226,7 @@ import {
   analyzeProject,
   formatDiagnostic,
   formatReport,
-} from "@throwscript/core";
+} from "@mirek/throwscript-core";
 
 const diagnostics = analyzeProject("tsconfig.json", {
   ignoreExternal: true,

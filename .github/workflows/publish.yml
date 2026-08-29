@@ -1,0 +1,79 @@
+name: Publish
+
+# Changesets release automation. On every push to main:
+#   - pending .changeset/*.md files → opens/updates the
+#     `chore(release): version packages` PR (branch changeset-release/main);
+#   - no pending changesets → runs the full verification gate, then
+#     `changeset publish`, which publishes every package whose version is not
+#     on npm yet (pnpm publish, so `workspace:*` ranges are rewritten) and
+#     tags it <package>@<version>. A no-op when everything is published.
+#
+# npm auth is OIDC trusted publishing (id-token: write) — no npm token.
+# Each @mirek/throwscript-* package must have this repo + THIS WORKFLOW
+# FILENAME (publish.yml) configured as a trusted publisher on npmjs.com, so do
+# not rename this file. A brand-new package cannot use trusted publishing for
+# its first release — see .changeset/README.md.
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write # push the changeset-release branch and the <package>@<version> tags
+  pull-requests: write # open/update the version packages PR
+  id-token: write # npm OIDC trusted publishing
+
+concurrency:
+  group: publish-main
+  cancel-in-progress: false # never cancel a run that may be mid-publish
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false # never use caching in release builds
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Detect pending changesets
+        id: pending
+        run: |
+          if git ls-files '.changeset/*.md' | grep -v '^\.changeset/README\.md$' | grep -q .; then
+            echo "changesets=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changesets=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Publishing ships the exact checked-out commit, so it runs the complete
+      # verification and installed-tarball gate first, whatever CI said elsewhere.
+      - name: Verify before publishing
+        if: steps.pending.outputs.changesets == 'false'
+        run: pnpm verify
+
+      # Note: the version packages PR is opened with GITHUB_TOKEN, so CI does
+      # not run on it automatically (GitHub suppresses workflows for events
+      # created by the default token). Its diff is versions and changelogs
+      # only; CI runs on main after merge, and the publish path above verifies
+      # before anything ships.
+      - uses: changesets/action@v1
+        with:
+          version: pnpm version-packages
+          publish: pnpm release:publish
+          commit: 'chore(release): version packages'
+          title: 'chore(release): version packages'
+          createGithubReleases: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_CONFIG_PROVENANCE: 'true'
