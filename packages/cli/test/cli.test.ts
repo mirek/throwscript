@@ -100,6 +100,53 @@ test("@nothrow mutes a diagnostic from the CLI", () => {
   }
 });
 
+test("--fix repeats until callers of newly documented functions are documented too", () => {
+  const workDir = mkdtempSync(path.join(tmpdir(), "throwscript-cli-chain-"));
+  try {
+    const target = path.join(workDir, "chain.ts");
+    cpSync(path.join(here, "fixtures", "chain.ts"), target);
+
+    const fixRun = runCli(["--fix", target]);
+    assert.equal(fixRun.status, 0, fixRun.stdout + fixRun.stderr);
+    assert.match(fixRun.stdout, /no problems found \(3 problems fixed\)/);
+
+    const fixedText = readFileSync(target, "utf8");
+    for (const fn of ["leaf", "mid", "top"]) {
+      assert.match(
+        fixedText,
+        new RegExp(`/\\*\\*\\n \\* @throws \\{ChainError\\}\\n \\*/\\nexport function ${fn}`),
+      );
+    }
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test("--format markdown emits an LLM-ready report", () => {
+  const result = runCli(["--format", "markdown", fixture]);
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /^# throwscript report/);
+  assert.match(result.stdout, /\*\*'undocumented'\*\* \(line 3\) — add `@throws \{BoomError\}`/);
+  assert.match(result.stdout, /line 4: throws `BoomError` — `throw new BoomError\("boom"\);`/);
+  assert.doesNotMatch(result.stdout, /'documented'/);
+});
+
+test("--no-external ignores @throws documented in .d.ts files", () => {
+  const external = path.join(here, "fixtures", "external.ts");
+  const withExternal = runCli([external]);
+  assert.equal(withExternal.status, 1);
+  assert.match(withExternal.stdout, /'parse' can throw \{SyntaxError\}/);
+
+  const withoutExternal = runCli(["--no-external", external]);
+  assert.equal(withoutExternal.status, 0, withoutExternal.stdout + withoutExternal.stderr);
+});
+
+test("invalid --format exits 2", () => {
+  const result = runCli(["--format", "yaml", fixture]);
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /--format must be one of/);
+});
+
 test("--help exits 0", () => {
   const result = runCli(["--help"]);
   assert.equal(result.status, 0);

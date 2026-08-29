@@ -72,8 +72,8 @@ test("missing-throws diagnostics carry fixes; applyFixes resolves them", () => {
     assert.match(newText, /\/\*\*\n \* @throws \{FixError\}\n \*\/\nexport function noDoc/);
     // Tag appended inside an existing multi-line JSDoc.
     assert.match(newText, /Existing multi-line docs\.\n \* @throws \{FixError\}\n \*\//);
-    // Single-line JSDoc broken open.
-    assert.match(newText, /\/\*\* One-liner\. \n \* @throws \{FixError\}\n \*\//);
+    // Single-line JSDoc rebuilt as a block: description line, then the tag.
+    assert.match(newText, /\/\*\*\n \* One-liner\.\n \* @throws \{FixError\}\n \*\//);
     // Arrow: block sits above the variable statement.
     assert.match(newText, /\/\*\*\n \* @throws \{FixError\}\n \*\/\nexport const arrow/);
     // Method: indentation matches the class body.

@@ -10,6 +10,31 @@ export interface ThrowsFix {
   text: string;
 }
 
+export type ThrowSiteKind = "throw" | "rethrow" | "call" | "reject";
+
+/** A place inside a function where an error type escapes. */
+export interface ThrowSite {
+  line: number;
+  column: number;
+  /** The escaping error type name. */
+  type: string;
+  /**
+   * How the error escapes: a `throw` statement, a rethrow of a caught error,
+   * a call to a `@throws`-documented function, or a `Promise.reject`.
+   */
+  kind: ThrowSiteKind;
+  /** The single-line source text of the throwing statement or expression. */
+  text: string;
+  /** For `call` sites: the documented callee that propagates the error. */
+  callee?: {
+    name: string;
+    file: string;
+    line: number;
+    /** Declared in a `.d.ts` (lib, node_modules) rather than in project code. */
+    external: boolean;
+  };
+}
+
 export interface ThrowsDiagnostic {
   kind: DiagnosticKind;
   severity: Severity;
@@ -20,6 +45,8 @@ export interface ThrowsDiagnostic {
   /** Error type names involved (missing or unused, depending on kind). */
   types: string[];
   message: string;
+  /** For `missing-throws`: every site where an undocumented type escapes. */
+  sites?: ThrowSite[];
   /** Present when the diagnostic can be auto-fixed (see `applyFixes`). */
   fix?: ThrowsFix;
 }
@@ -30,20 +57,50 @@ export interface AnalyzeOptions {
    * Defaults to true (reported as warnings).
    */
   reportUnused?: boolean;
+  /**
+   * Ignore `@throws` tags on declarations that live in `.d.ts` files (the
+   * TypeScript lib, `@types/node`, node_modules). By default a call to e.g.
+   * `JSON.parse` propagates its documented `SyntaxError` into the caller.
+   */
+  ignoreExternal?: boolean;
+  /**
+   * Restrict reporting to the files this predicate accepts. Files that are
+   * only pulled into the program through imports are still used to resolve
+   * `@throws` tags on callees, but are not themselves reported on.
+   */
+  fileFilter?: (fileName: string) => boolean;
+  /**
+   * Called for non-fatal tsconfig problems (unknown compiler options, lib
+   * entries this TypeScript version does not know about, ...). The project
+   * is still analyzed; when omitted the problems are silently ignored.
+   */
+  onConfigWarning?: (message: string) => void;
 }
 
 /** A thrown error type observed while walking a function body. */
 interface ThrownType {
   name: string;
-  /** Resolved type, when available, used for assignability against documented types. */
+  /** Resolved type, when available, used for heritage checks against documented types. */
   type: ts.Type | undefined;
   node: ts.Node;
+  kind: ThrowSiteKind;
+  callee?: ThrowSite["callee"];
 }
 
 interface DocumentedType {
   name: string;
   type: ts.Type | undefined;
   tag: ts.JSDocTag;
+}
+
+interface Context {
+  checker: ts.TypeChecker;
+  options: AnalyzeOptions;
+}
+
+interface CatchContext {
+  variableName: string | undefined;
+  caughtTypes: ThrownType[];
 }
 
 const FALLBACK_ERROR_NAME = "Error";
@@ -63,6 +120,7 @@ export function analyzeProgram(
   for (const sourceFile of program.getSourceFiles()) {
     if (sourceFile.isDeclarationFile) continue;
     if (program.isSourceFileFromExternalLibrary(sourceFile)) continue;
+    if (options.fileFilter !== undefined && !options.fileFilter(sourceFile.fileName)) continue;
     analyzeSourceFile(sourceFile, checker, options, diagnostics);
   }
   return diagnostics;
@@ -74,10 +132,11 @@ export function analyzeSourceFile(
   options: AnalyzeOptions,
   diagnostics: ThrowsDiagnostic[],
 ): void {
+  const ctx: Context = { checker, options };
   const mutedLines = collectMutedLines(sourceFile);
   const visit = (node: ts.Node): void => {
     if (isCheckableFunction(node)) {
-      checkFunction(node, sourceFile, checker, options, diagnostics, mutedLines);
+      checkFunction(node, sourceFile, ctx, diagnostics, mutedLines);
     }
     ts.forEachChild(node, visit);
   };
@@ -143,23 +202,22 @@ function isCheckableFunction(node: ts.Node): node is ts.FunctionLikeDeclaration 
 function checkFunction(
   fn: ts.FunctionLikeDeclaration,
   sourceFile: ts.SourceFile,
-  checker: ts.TypeChecker,
-  options: AnalyzeOptions,
+  ctx: Context,
   diagnostics: ThrowsDiagnostic[],
   mutedLines: Set<number>,
 ): void {
   // A muted throw site (throw statement, propagating call, Promise.reject)
   // does not count as an observable throw at all.
-  const thrown = collectThrownTypes(fn, checker).filter(
+  const thrown = collectThrownTypes(fn, ctx).filter(
     (t) =>
       !mutedLines.has(
         sourceFile.getLineAndCharacterOfPosition(t.node.getStart(sourceFile)).line,
       ),
   );
-  const documented = getDocumentedThrows(fn, checker);
+  const documented = getDocumentedThrows(fn, ctx.checker);
 
   const missing = thrown.filter(
-    (t) => !documented.some((d) => covers(d, t, checker)),
+    (t) => !documented.some((d) => covers(d, t, ctx.checker)),
   );
   // Collapse duplicates by name, keep first occurrence for location.
   const missingByName = new Map<string, ThrownType>();
@@ -186,14 +244,15 @@ function checkFunction(
           `${name} can throw ${formatTypeList(types)} but has no @throws tag for ` +
           `${types.length === 1 ? "it" : "them"}. ` +
           `Document with ${types.map((t) => `\`@throws {${t}}\``).join(", ")}.`,
+        sites: missing.map((t) => toThrowSite(t, sourceFile)),
         fix: computeMissingThrowsFix(fn, sourceFile, types),
       });
     }
   }
 
-  if (options.reportUnused !== false) {
+  if (ctx.options.reportUnused !== false) {
     const unused = documented.filter(
-      (d) => !thrown.some((t) => covers(d, t, checker)),
+      (d) => !thrown.some((t) => covers(d, t, ctx.checker)),
     );
     for (const d of unused) {
       const pos = sourceFile.getLineAndCharacterOfPosition(d.tag.getStart(sourceFile));
@@ -210,6 +269,24 @@ function checkFunction(
       });
     }
   }
+}
+
+function toThrowSite(t: ThrownType, sourceFile: ts.SourceFile): ThrowSite {
+  const pos = sourceFile.getLineAndCharacterOfPosition(t.node.getStart(sourceFile));
+  const site: ThrowSite = {
+    line: pos.line + 1,
+    column: pos.character + 1,
+    type: t.name,
+    kind: t.kind,
+    text: singleLine(t.node.getText(sourceFile)),
+  };
+  if (t.callee !== undefined) site.callee = t.callee;
+  return site;
+}
+
+function singleLine(text: string, max = 120): string {
+  const collapsed = text.replace(/\s*\n\s*/g, " ").trim();
+  return collapsed.length > max ? `${collapsed.slice(0, max - 1)}…` : collapsed;
 }
 
 /**
@@ -252,12 +329,15 @@ function computeMissingThrowsFix(
     const lines = types.map((t) => `${indent} * @throws {${t}}\n`).join("");
     return { start: closeLineStart, end: closeLineStart, text: lines };
   }
-  // Single-line JSDoc (`/** desc */`): break it open before the `*/`.
-  const lines =
-    `\n` +
-    types.map((t) => `${indent} * @throws {${t}}`).join("\n") +
-    `\n${indent} `;
-  return { start: closeStart, end: closeStart, text: lines };
+  // Single-line JSDoc (`/** desc */`): rebuild it as a block with the
+  // description on its own line followed by the tags.
+  const description = text.slice(jsdoc.pos + 3, closeStart).trim();
+  const block =
+    `/**\n` +
+    (description === "" ? "" : `${indent} * ${description}\n`) +
+    types.map((t) => `${indent} * @throws {${t}}\n`).join("") +
+    `${indent} */`;
+  return { start: jsdoc.pos, end: jsdoc.end, text: block };
 }
 
 /** The node a JSDoc comment for `fn` attaches to (e.g. the variable statement for an arrow). */
@@ -298,18 +378,27 @@ function findLeadingJSDocRange(
 }
 
 /**
- * Whether a documented @throws type covers a thrown type: exact name match, or
- * the documented type appears in the thrown type's heritage chain (e.g.
- * `@throws {Error}` covers a thrown `ValidationError extends Error`).
+ * Whether a documented @throws type covers a thrown type: same (unqualified)
+ * name, or the documented type appears in the thrown type's heritage chain
+ * (e.g. `@throws {Error}` covers a thrown `ValidationError extends Error`).
+ *
+ * Names are compared without their namespace qualifier so that
+ * `@throws {JsonRpcError}` covers `throw new Jsonrpc.JsonRpcError()` and vice
+ * versa — the qualifier is an import alias, not part of the type's identity.
  *
  * Deliberately nominal rather than structural: `class A extends Error {}` and
  * `class B extends Error {}` are structurally identical, so TypeScript
  * assignability would let a documented A "cover" a thrown B.
  */
 function covers(doc: DocumentedType, thrown: ThrownType, checker: ts.TypeChecker): boolean {
-  if (doc.name === thrown.name) return true;
+  if (unqualified(doc.name) === unqualified(thrown.name)) return true;
   if (thrown.type === undefined) return false;
-  return heritageNames(thrown.type, checker).has(doc.name);
+  return heritageNames(thrown.type, checker).has(unqualified(doc.name));
+}
+
+function unqualified(name: string): string {
+  const idx = name.lastIndexOf(".");
+  return idx === -1 ? name : name.slice(idx + 1);
 }
 
 /** Collect the names of every base class/interface in a type's extends chain. */
@@ -336,8 +425,15 @@ function heritageNames(
   return seen;
 }
 
+/**
+ * Read the `@throws` / `@exception` tags of a function. Besides the canonical
+ * `@throws {Type} description` form, the TSDoc-flavoured
+ * `@throws {@link Type} description` and the bare `@throws Type description`
+ * are understood; `@throws description` with no recognizable type documents
+ * the base `Error`.
+ */
 function getDocumentedThrows(
-  fn: ts.FunctionLikeDeclaration,
+  fn: ts.SignatureDeclaration,
   checker: ts.TypeChecker,
 ): DocumentedType[] {
   const result: DocumentedType[] = [];
@@ -345,23 +441,85 @@ function getDocumentedThrows(
     const tagName = tag.tagName.text;
     if (tagName !== "throws" && tagName !== "exception") continue;
     const typeExpression = ts.isJSDocThrowsTag(tag) ? tag.typeExpression : undefined;
-    if (typeExpression === undefined) {
-      // `@throws description` with no {Type}: treat as documenting the base Error.
-      result.push({ name: FALLBACK_ERROR_NAME, type: undefined, tag });
+    if (typeExpression !== undefined && typeExpression.type.getText().trim() !== "") {
+      for (const typeNode of splitUnionTypeNode(typeExpression.type)) {
+        let type: ts.Type | undefined;
+        try {
+          type = checker.getTypeFromTypeNode(typeNode);
+          if (type.flags & ts.TypeFlags.Any) type = undefined;
+        } catch {
+          type = undefined;
+        }
+        result.push({ name: typeNode.getText(), type, tag });
+      }
       continue;
     }
-    for (const typeNode of splitUnionTypeNode(typeExpression.type)) {
-      let type: ts.Type | undefined;
-      try {
-        type = checker.getTypeFromTypeNode(typeNode);
-        if (type.flags & ts.TypeFlags.Any) type = undefined;
-      } catch {
-        type = undefined;
-      }
-      result.push({ name: typeNode.getText(), type, tag });
-    }
+    const name = documentedNameFromText(tag, fn, checker) ?? FALLBACK_ERROR_NAME;
+    result.push({ name, type: resolveTypeByName(name, fn, checker), tag });
   }
   return result;
+}
+
+const THROWS_TEXT =
+  /^@(?:throws|exception)\s*(?:\{\s*@link(?:code|plain)?\s+([\w$][\w$.]*)[^}]*\}|([A-Za-z_$][\w$.]*)(?=[\s,.;:]|$))?/;
+
+/**
+ * Recover the documented type from the raw tag text when the JSDoc parser
+ * did not produce a type expression: `{@link Type}` (which TypeScript splits
+ * into an empty type and a separate `link` tag) or a bare leading `Type`.
+ * A bare word only counts as a type when it resolves to something in scope or
+ * looks like an error class name — `@throws if empty` documents no type.
+ */
+function documentedNameFromText(
+  tag: ts.JSDocTag,
+  location: ts.Node,
+  checker: ts.TypeChecker,
+): string | undefined {
+  const sourceFile = tag.getSourceFile();
+  const start = tag.getStart(sourceFile);
+  const lineEnd = sourceFile.text.indexOf("\n", start);
+  const text = sourceFile.text.slice(start, lineEnd === -1 ? undefined : lineEnd);
+  const match = THROWS_TEXT.exec(text);
+  if (match === null) return undefined;
+  const linked = match[1];
+  if (linked !== undefined) return linked;
+  const bare = match[2];
+  if (bare === undefined) return undefined;
+  if (/(Error|Exception)$/.test(bare)) return bare;
+  return resolveTypeByName(bare, location, checker) !== undefined ? bare : undefined;
+}
+
+/** Resolve a (possibly qualified) type name as seen from `location`, if it names a class/interface. */
+function resolveTypeByName(
+  name: string,
+  location: ts.Node,
+  checker: ts.TypeChecker,
+): ts.Type | undefined {
+  const [head, ...rest] = name.split(".");
+  if (head === undefined || head === "") return undefined;
+  try {
+    let symbol = checker.resolveName(
+      head,
+      location,
+      ts.SymbolFlags.Type | ts.SymbolFlags.Value | ts.SymbolFlags.Namespace,
+      /* excludeGlobals */ false,
+    );
+    for (const segment of rest) {
+      if (symbol === undefined) return undefined;
+      if (symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
+      const exports = checker.getExportsOfModule(symbol);
+      symbol = exports.find((s) => s.getName() === segment);
+    }
+    if (symbol === undefined) return undefined;
+    if (symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
+    if ((symbol.flags & (ts.SymbolFlags.Class | ts.SymbolFlags.Interface)) === 0) {
+      return undefined;
+    }
+    const type = checker.getDeclaredTypeOfSymbol(symbol);
+    return type.flags & ts.TypeFlags.Any ? undefined : type;
+  } catch {
+    return undefined;
+  }
 }
 
 function splitUnionTypeNode(node: ts.TypeNode): ts.TypeNode[] {
@@ -376,55 +534,50 @@ function splitUnionTypeNode(node: ts.TypeNode): ts.TypeNode[] {
  * errors, and Promise rejections (`Promise.reject`, awaited/returned promises
  * from `@throws`-documented async callees).
  */
-function collectThrownTypes(
-  fn: ts.FunctionLikeDeclaration,
-  checker: ts.TypeChecker,
-): ThrownType[] {
+function collectThrownTypes(fn: ts.FunctionLikeDeclaration, ctx: Context): ThrownType[] {
   const collected: ThrownType[] = [];
   const body = fn.body;
   if (body === undefined) return collected;
-  visitForThrows(body, checker, (t) => collected.push(t));
+  visitForThrows(body, ctx, (t) => collected.push(t));
   return collected;
 }
 
 function visitForThrows(
   node: ts.Node,
-  checker: ts.TypeChecker,
+  ctx: Context,
   report: (t: ThrownType) => void,
-  catchContext?: { variableName: string | undefined; caughtTypes: ThrownType[] },
+  catchContext?: CatchContext,
 ): void {
   // Nested functions own their throws; they are checked independently.
   if (ts.isFunctionLike(node)) return;
 
   if (ts.isTryStatement(node)) {
-    visitTryStatement(node, checker, report, catchContext);
+    visitTryStatement(node, ctx, report, catchContext);
     return;
   }
 
   if (ts.isThrowStatement(node)) {
-    reportThrowStatement(node, checker, report, catchContext);
+    reportThrowStatement(node, ctx, report, catchContext);
     // Still walk the thrown expression: `throw makeError()` may call a
     // @throws-documented factory that itself can throw something else.
-    visitForThrows(node.expression, checker, report, catchContext);
+    visitForThrows(node.expression, ctx, report, catchContext);
     return;
   }
 
   if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
-    reportCallExpression(node, checker, report);
-    ts.forEachChild(node, (child) =>
-      visitForThrows(child, checker, report, catchContext),
-    );
+    reportCallExpression(node, ctx, report);
+    ts.forEachChild(node, (child) => visitForThrows(child, ctx, report, catchContext));
     return;
   }
 
-  ts.forEachChild(node, (child) => visitForThrows(child, checker, report, catchContext));
+  ts.forEachChild(node, (child) => visitForThrows(child, ctx, report, catchContext));
 }
 
 function visitTryStatement(
   node: ts.TryStatement,
-  checker: ts.TypeChecker,
+  ctx: Context,
   report: (t: ThrownType) => void,
-  outerCatchContext?: { variableName: string | undefined; caughtTypes: ThrownType[] },
+  outerCatchContext?: CatchContext,
 ): void {
   const caughtTypes: ThrownType[] = [];
   const hasCatch = node.catchClause !== undefined;
@@ -433,7 +586,7 @@ function visitTryStatement(
   // otherwise they escape.
   visitForThrows(
     node.tryBlock,
-    checker,
+    ctx,
     hasCatch ? (t) => caughtTypes.push(t) : report,
     outerCatchContext,
   );
@@ -442,23 +595,21 @@ function visitTryStatement(
     const decl = node.catchClause.variableDeclaration;
     const variableName =
       decl !== undefined && ts.isIdentifier(decl.name) ? decl.name.text : undefined;
-    visitForThrows(node.catchClause.block, checker, report, {
-      variableName,
-      caughtTypes,
-    });
+    visitForThrows(node.catchClause.block, ctx, report, { variableName, caughtTypes });
   }
 
   if (node.finallyBlock !== undefined) {
-    visitForThrows(node.finallyBlock, checker, report, outerCatchContext);
+    visitForThrows(node.finallyBlock, ctx, report, outerCatchContext);
   }
 }
 
 function reportThrowStatement(
   node: ts.ThrowStatement,
-  checker: ts.TypeChecker,
+  ctx: Context,
   report: (t: ThrownType) => void,
-  catchContext?: { variableName: string | undefined; caughtTypes: ThrownType[] },
+  catchContext?: CatchContext,
 ): void {
+  const { checker } = ctx;
   const expr = unwrapParentheses(node.expression);
 
   // Rethrowing the caught error propagates whatever the try block could throw,
@@ -471,54 +622,66 @@ function reportThrowStatement(
   ) {
     const narrowed = checker.getTypeAtLocation(expr);
     if ((narrowed.flags & (ts.TypeFlags.Any | ts.TypeFlags.Unknown)) === 0) {
-      for (const t of typeToThrownTypes(narrowed, node)) report(t);
+      for (const t of typeToThrownTypes(narrowed, node, "rethrow")) report(t);
       return;
     }
     if (catchContext.caughtTypes.length > 0) {
-      for (const t of catchContext.caughtTypes) report({ ...t, node });
+      for (const t of catchContext.caughtTypes) report({ ...t, node, kind: "rethrow" });
     } else {
-      report({ name: FALLBACK_ERROR_NAME, type: undefined, node });
+      report({ name: FALLBACK_ERROR_NAME, type: undefined, node, kind: "rethrow" });
     }
     return;
   }
 
   if (ts.isNewExpression(expr)) {
-    const name = expr.expression.getText();
     let type: ts.Type | undefined;
     try {
       type = checker.getTypeAtLocation(expr);
     } catch {
       type = undefined;
     }
-    report({ name, type, node });
+    report({ name: thrownTypeName(expr, type), type, node, kind: "throw" });
     return;
   }
 
   const type = checker.getTypeAtLocation(expr);
-  const named = typeToThrownTypes(type, node);
+  const named = typeToThrownTypes(type, node, "throw");
   if (named.length > 0) {
     for (const t of named) report(t);
   } else {
-    report({ name: FALLBACK_ERROR_NAME, type: undefined, node });
+    report({ name: FALLBACK_ERROR_NAME, type: undefined, node, kind: "throw" });
   }
 }
 
-function typeToThrownTypes(type: ts.Type, node: ts.Node): ThrownType[] {
+/**
+ * Display name for `new X()`: the constructor expression as written
+ * (`Jsonrpc.JsonRpcError`), which is what a `@throws` tag in this file can
+ * refer to, falling back to the symbol name when the expression is not a
+ * plain (qualified) identifier.
+ */
+function thrownTypeName(expr: ts.NewExpression, type: ts.Type | undefined): string {
+  const text = expr.expression.getText();
+  if (/^[\w$][\w$.]*$/.test(text)) return text;
+  return (type?.getSymbol() ?? type?.aliasSymbol)?.getName() ?? text;
+}
+
+function typeToThrownTypes(type: ts.Type, node: ts.Node, kind: ThrowSiteKind): ThrownType[] {
   if (type.isUnion()) {
-    return type.types.flatMap((t) => typeToThrownTypes(t, node));
+    return type.types.flatMap((t) => typeToThrownTypes(t, node, kind));
   }
   const symbol = type.getSymbol() ?? type.aliasSymbol;
   if (symbol === undefined) return [];
   const name = symbol.getName();
   if (name === "__type" || name === "__object" || name === "unknown") return [];
-  return [{ name, type, node }];
+  return [{ name, type, node, kind }];
 }
 
 function reportCallExpression(
   node: ts.CallExpression | ts.NewExpression,
-  checker: ts.TypeChecker,
+  ctx: Context,
   report: (t: ThrownType) => void,
 ): void {
+  const { checker } = ctx;
   // Promise.reject(x) — rejects with x. Counts when the promise is observed
   // (awaited or returned), same rule as calls to @throws-documented functions.
   if (
@@ -530,20 +693,17 @@ function reportCallExpression(
     if (!isPromiseObserved(node)) return;
     const arg = node.arguments[0];
     if (arg === undefined) {
-      report({ name: FALLBACK_ERROR_NAME, type: undefined, node });
+      report({ name: FALLBACK_ERROR_NAME, type: undefined, node, kind: "reject" });
       return;
     }
     const unwrapped = unwrapParentheses(arg);
     if (ts.isNewExpression(unwrapped)) {
-      report({
-        name: unwrapped.expression.getText(),
-        type: checker.getTypeAtLocation(unwrapped),
-        node,
-      });
+      const type = checker.getTypeAtLocation(unwrapped);
+      report({ name: thrownTypeName(unwrapped, type), type, node, kind: "reject" });
     } else {
-      const types = typeToThrownTypes(checker.getTypeAtLocation(unwrapped), node);
+      const types = typeToThrownTypes(checker.getTypeAtLocation(unwrapped), node, "reject");
       if (types.length > 0) for (const t of types) report(t);
-      else report({ name: FALLBACK_ERROR_NAME, type: undefined, node });
+      else report({ name: FALLBACK_ERROR_NAME, type: undefined, node, kind: "reject" });
     }
     return;
   }
@@ -553,7 +713,11 @@ function reportCallExpression(
   const declaration = signature.getDeclaration();
   if (declaration === undefined) return;
 
-  const documented = getDocumentedThrows(declaration as ts.FunctionLikeDeclaration, checker);
+  const declarationFile = declaration.getSourceFile();
+  const external = declarationFile.isDeclarationFile;
+  if (external && ctx.options.ignoreExternal === true) return;
+
+  const documented = getDocumentedThrows(declaration, checker);
   if (documented.length === 0) return;
 
   // Synchronous callee: its throws surface here unconditionally. Promise
@@ -564,9 +728,27 @@ function reportCallExpression(
   if (returnsPromise && !isPromiseObserved(node)) return;
   if (returnsPromise && isRejectionHandled(node)) return;
 
+  const callee: ThrowSite["callee"] = {
+    name: calleeDisplayName(node, declaration),
+    file: declarationFile.fileName,
+    line: declarationFile.getLineAndCharacterOfPosition(declaration.getStart(declarationFile)).line + 1,
+    external,
+  };
   for (const d of documented) {
-    report({ name: d.name, type: d.type, node });
+    report({ name: d.name, type: d.type, node, kind: "call", callee });
   }
+}
+
+/** `path.join` / `new Foo` / `foo` — the callee as written at the call site. */
+function calleeDisplayName(
+  node: ts.CallExpression | ts.NewExpression,
+  declaration: ts.SignatureDeclaration,
+): string {
+  const text = singleLine(node.expression.getText(), 60);
+  if (ts.isNewExpression(node)) return `new ${text}`;
+  if (/^[\w$][\w$.]*$/.test(text)) return text;
+  const declared = ts.getNameOfDeclaration(declaration);
+  return declared !== undefined ? declared.getText() : text;
 }
 
 function isPromiseLikeType(type: ts.Type, checker: ts.TypeChecker): boolean {
