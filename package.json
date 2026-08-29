@@ -6,7 +6,12 @@
     "build": "tsc -b packages/core packages/cli",
     "lint": "oxlint .",
     "test": "pnpm run build && pnpm -r run test",
-    "check": "pnpm run build && pnpm run lint && pnpm run test"
+    "pack:check": "node scripts/pack-check.mjs",
+    "check": "pnpm run build && pnpm run lint && pnpm run test",
+    "verify": "pnpm run check && pnpm run pack:check",
+    "changeset": "changeset",
+    "version-packages": "changeset version",
+    "release:publish": "changeset publish"
   },
   "packageManager": "pnpm@10.33.0",
   "pnpm": {
@@ -18,6 +23,7 @@
     "node": ">=20"
   },
   "devDependencies": {
+    "@changesets/cli": "^2.29.0",
     "oxlint": "^1.72.0",
     "typescript": "^5.9.3"
   }

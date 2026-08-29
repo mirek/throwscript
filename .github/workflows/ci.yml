@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Every PR must add a changeset (see .changeset/README.md). The automated
+  # version packages PR is the one exception: it consumes changesets.
+  changeset:
+    name: Changeset
+    if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'changeset-release/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require a changeset
+        run: |
+          added="$(git diff --name-only --diff-filter=A "origin/${{ github.base_ref }}...HEAD" -- '.changeset/*.md' | grep -v '^\.changeset/README\.md$' || true)"
+          if [ -z "$added" ]; then
+            echo "::error::This PR adds no changeset. Run \`pnpm changeset\` (or \`pnpm changeset --empty\` for a change that publishes nothing) and commit the file under .changeset/."
+            exit 1
+          fi
+          echo "changesets added:"
+          echo "$added"
+
+  verify:
+    name: Verify (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        # GitHub's default shell runs `bash -e` without pipefail, so
+        # `pnpm X | tee X.log` would report success whatever X did.
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        node:
+          - 20
+          - 22
+          - 24
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm build 2>&1 | tee build.log
+      - name: Lint
+        run: pnpm lint 2>&1 | tee lint.log
+      - name: Test
+        run: pnpm -r test 2>&1 | tee test.log
+      - name: Validate tarballs
+        run: pnpm pack:check 2>&1 | tee pack-check.log
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diagnostics-node-${{ matrix.node }}
+          path: '*.log'
+          retention-days: 1
+
+  ci:
+    name: CI
+    if: always()
+    needs:
+      - changeset
+      - verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all verification jobs
+        # The changeset job is skipped on pushes to main and on the version packages PR.
+        run: |
+          test "${{ needs.verify.result }}" = success
+          case "${{ needs.changeset.result }}" in success|skipped) ;; *) exit 1 ;; esac

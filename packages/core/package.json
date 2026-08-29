@@ -1,9 +1,19 @@
 {
-  "name": "@throwscript/core",
+  "name": "@mirek/throwscript-core",
   "version": "0.4.0",
-  "description": "Checker that asserts every function that can throw documents it with a JSDoc @throws tag",
-  "type": "module",
+  "description": "Analyzer asserting every TypeScript function that can throw documents it with a JSDoc @throws tag.",
+  "keywords": [
+    "throwscript",
+    "throws",
+    "jsdoc",
+    "typescript",
+    "linter",
+    "exceptions",
+    "errors"
+  ],
+  "author": "Mirek Rusin (https://github.com/mirek)",
   "license": "MIT",
+  "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -26,5 +36,18 @@
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.9.3"
-  }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mirek/throwscript.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/mirek/throwscript/tree/main/packages/core#readme",
+  "bugs": "https://github.com/mirek/throwscript/issues"
 }

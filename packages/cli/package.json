@@ -1,9 +1,19 @@
 {
-  "name": "throwscript",
+  "name": "@mirek/throwscript-cli",
   "version": "0.4.0",
-  "description": "Linter-like checker: every function that can throw must document it with JSDoc @throws",
-  "type": "module",
+  "description": "Linter-like CLI: every function that can throw must document it with JSDoc @throws.",
+  "keywords": [
+    "throwscript",
+    "throws",
+    "jsdoc",
+    "typescript",
+    "linter",
+    "exceptions",
+    "errors"
+  ],
+  "author": "Mirek Rusin (https://github.com/mirek)",
   "license": "MIT",
+  "type": "module",
   "bin": {
     "throwscript": "./dist/main.js"
   },
@@ -16,7 +26,7 @@
     "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@throwscript/core": "workspace:*"
+    "@mirek/throwscript-core": "workspace:*"
   },
   "peerDependencies": {
     "typescript": ">=5.5.0 <7"
@@ -25,5 +35,18 @@
     "@types/node": "^22.0.0",
     "tsx": "^4.19.0",
     "typescript": "^5.9.3"
-  }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mirek/throwscript.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/mirek/throwscript/tree/main/packages/cli#readme",
+  "bugs": "https://github.com/mirek/throwscript/issues"
 }

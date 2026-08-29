@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import process from "node:process";
 import {
@@ -10,9 +11,9 @@ import {
   formatReport,
   type AnalyzeOptions,
   type ThrowsDiagnostic,
-} from "@throwscript/core";
+} from "@mirek/throwscript-core";
 
-const VERSION = "0.4.0";
+const VERSION = (createRequire(import.meta.url)("../package.json") as { version: string }).version;
 
 const HELP = `throwscript — assert every function that can throw has a JSDoc @throws tag
 
