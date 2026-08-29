@@ -7,8 +7,12 @@ import {
   analyzeProject,
   applyFixes,
   formatDiagnostic,
+  formatReport,
+  type AnalyzeOptions,
   type ThrowsDiagnostic,
 } from "@throwscript/core";
+
+const VERSION = "0.4.0";
 
 const HELP = `throwscript — assert every function that can throw has a JSDoc @throws tag
 
@@ -27,27 +31,37 @@ Muting (eslint-style):
 
 Options:
   -p, --project <tsconfig>  Check all files from the given tsconfig project
-  --fix                     Insert missing @throws tags into JSDoc comments
+  --fix                     Insert missing @throws tags into JSDoc comments,
+                            repeating until no fixable problem remains
   --no-unused               Do not warn about @throws tags that never throw
-  --json                    Emit diagnostics as JSON
+  --no-external             Ignore @throws documented in .d.ts files (lib, @types)
+  -f, --format <fmt>        Output format: text (default), json, markdown
+  --json                    Shorthand for --format json
   -h, --help                Show this help
   -v, --version             Show version
 `;
+
+type Format = "text" | "json" | "markdown";
 
 interface CliOptions {
   project: string | undefined;
   files: string[];
   reportUnused: boolean;
-  json: boolean;
+  ignoreExternal: boolean;
+  format: Format;
   fix: boolean;
 }
+
+/** Upper bound on --fix rounds: each round documents one more layer of callers. */
+const MAX_FIX_ROUNDS = 20;
 
 function parseArgs(argv: string[]): CliOptions | "help" | "version" {
   const options: CliOptions = {
     project: undefined,
     files: [],
     reportUnused: true,
-    json: false,
+    ignoreExternal: false,
+    format: "text",
     fix: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -69,14 +83,26 @@ function parseArgs(argv: string[]): CliOptions | "help" | "version" {
         options.project = value;
         break;
       }
+      case "-f":
+      case "--format": {
+        const value = argv[++i];
+        if (value !== "text" && value !== "json" && value !== "markdown") {
+          throw new UsageError("--format must be one of: text, json, markdown");
+        }
+        options.format = value;
+        break;
+      }
       case "--fix":
         options.fix = true;
         break;
       case "--no-unused":
         options.reportUnused = false;
         break;
+      case "--no-external":
+        options.ignoreExternal = true;
+        break;
       case "--json":
-        options.json = true;
+        options.format = "json";
         break;
       default:
         if (arg.startsWith("-")) {
@@ -94,7 +120,11 @@ class UsageError extends Error {}
  * @throws {UsageError} when the command line is invalid
  */
 function analyze(options: CliOptions): ThrowsDiagnostic[] {
-  const analyzeOptions = { reportUnused: options.reportUnused };
+  const analyzeOptions: AnalyzeOptions = {
+    reportUnused: options.reportUnused,
+    ignoreExternal: options.ignoreExternal,
+    onConfigWarning: (message: string) => console.error(`warning: ${message}`),
+  };
   if (options.files.length > 0) {
     if (options.project !== undefined) {
       throw new UsageError("pass either --project or a list of files, not both");
@@ -104,9 +134,7 @@ function analyze(options: CliOptions): ThrowsDiagnostic[] {
       throw new UsageError(`file not found: ${missing.join(", ")}`);
     }
     const targets = new Set(options.files.map((f) => path.resolve(f)));
-    return analyzeFiles([...targets], analyzeOptions).filter((d) =>
-      targets.has(path.resolve(d.file)),
-    );
+    return analyzeFiles([...targets], analyzeOptions);
   }
   const tsconfig = options.project ?? path.join(process.cwd(), "tsconfig.json");
   if (!existsSync(tsconfig)) {
@@ -117,6 +145,28 @@ function analyze(options: CliOptions): ThrowsDiagnostic[] {
     );
   }
   return analyzeProject(tsconfig, analyzeOptions);
+}
+
+/**
+ * Documenting a callee makes its callers' `@throws` tags incomplete in turn,
+ * so apply fixes and re-analyze until nothing fixable is left (or the round
+ * limit is hit). Returns the final diagnostics and the number of fixes made.
+ *
+ * @throws {UsageError} when the command line is invalid
+ */
+function analyzeAndFix(options: CliOptions): { diagnostics: ThrowsDiagnostic[]; fixed: number } {
+  let diagnostics = analyze(options);
+  let fixed = 0;
+  for (let round = 0; round < MAX_FIX_ROUNDS; round++) {
+    const fixable = diagnostics.filter((d) => d.fix !== undefined);
+    if (fixable.length === 0) break;
+    const updated = applyFixes(diagnostics);
+    if (updated.size === 0) break;
+    for (const [file, text] of updated) writeFileSync(file, text);
+    fixed += fixable.length;
+    diagnostics = analyze(options);
+  }
+  return { diagnostics, fixed };
 }
 
 function run(): number {
@@ -137,7 +187,7 @@ function run(): number {
     return 0;
   }
   if (parsed === "version") {
-    console.log("throwscript 0.3.0");
+    console.log(`throwscript ${VERSION}`);
     return 0;
   }
 
@@ -146,17 +196,10 @@ function run(): number {
   let fixedCount = 0;
 
   try {
-    diagnostics = analyze(parsed);
     if (parsed.fix) {
-      const fixable = diagnostics.filter((d) => d.fix !== undefined);
-      const updated = applyFixes(diagnostics);
-      for (const [file, text] of updated) {
-        writeFileSync(file, text);
-      }
-      if (updated.size > 0) {
-        fixedCount = fixable.length;
-        diagnostics = analyze(parsed);
-      }
+      ({ diagnostics, fixed: fixedCount } = analyzeAndFix(parsed));
+    } else {
+      diagnostics = analyze(parsed);
     }
   } catch (error) {
     if (error instanceof UsageError) {
@@ -171,29 +214,35 @@ function run(): number {
     (a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column,
   );
 
-  if (parsed.json) {
-    console.log(JSON.stringify(diagnostics, null, 2));
-  } else {
-    for (const d of diagnostics) {
-      console.log(formatDiagnostic(d, cwd));
-    }
-    const errors = diagnostics.filter((d) => d.severity === "error").length;
-    const warnings = diagnostics.length - errors;
-    const fixedNote =
-      fixedCount > 0
-        ? ` (${fixedCount} problem${fixedCount === 1 ? "" : "s"} fixed)`
-        : "";
-    if (diagnostics.length === 0) {
-      console.log(`throwscript: no problems found${fixedNote}`);
-    } else {
-      console.log(
-        `\nthrowscript: ${errors} error${errors === 1 ? "" : "s"}, ` +
-          `${warnings} warning${warnings === 1 ? "" : "s"}${fixedNote}`,
-      );
-    }
+  const errors = diagnostics.filter((d) => d.severity === "error").length;
+  const warnings = diagnostics.length - errors;
+  const fixedNote =
+    fixedCount > 0 ? ` (${fixedCount} problem${fixedCount === 1 ? "" : "s"} fixed)` : "";
+
+  switch (parsed.format) {
+    case "json":
+      console.log(JSON.stringify(diagnostics, null, 2));
+      break;
+    case "markdown":
+      console.log(formatReport(diagnostics, cwd));
+      if (fixedCount > 0) console.error(`throwscript:${fixedNote.trim()}`);
+      break;
+    case "text":
+      for (const d of diagnostics) {
+        console.log(formatDiagnostic(d, cwd));
+      }
+      if (diagnostics.length === 0) {
+        console.log(`throwscript: no problems found${fixedNote}`);
+      } else {
+        console.log(
+          `\nthrowscript: ${errors} error${errors === 1 ? "" : "s"}, ` +
+            `${warnings} warning${warnings === 1 ? "" : "s"}${fixedNote}`,
+        );
+      }
+      break;
   }
 
-  return diagnostics.some((d) => d.severity === "error") ? 1 : 0;
+  return errors > 0 ? 1 : 0;
 }
 
 process.exitCode = run();

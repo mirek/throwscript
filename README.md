@@ -52,11 +52,40 @@ throwscript src/a.ts src/b.ts
 throwscript --fix src/a.ts
 
 # machine-readable output
-throwscript --json src/a.ts
+throwscript --format json src/a.ts
+
+# a Markdown report listing every throw site, for a reviewer or an LLM
+throwscript --format markdown > throws-report.md
+
+# ignore @throws documented in .d.ts files (JSON.parse, path.join, ...)
+throwscript --no-external
 ```
 
 Exit code is `1` when any function is missing a `@throws` tag, `0` otherwise.
 Unused `@throws` tags are reported as warnings (disable with `--no-unused`).
+
+Only files that belong to the project (or that were passed explicitly) are
+reported on. Files that are merely imported — e.g. another workspace package
+resolved through `paths` — are used to resolve `@throws` tags on callees but
+produce no diagnostics of their own.
+
+throwscript uses the `typescript` package installed in your project (any
+5.5+ or 6.x release); tsconfig options this compiler does not understand are
+printed as warnings and the analysis proceeds, as `tsc` would.
+
+## Accepted `@throws` forms
+
+```ts
+/** @throws {NotFoundError} when the id does not exist */   // canonical
+/** @throws {NotFoundError | TimeoutError} ... */             // union
+/** @throws {@link NotFoundError} when ... */                 // TSDoc inline link
+/** @throws NotFoundError when ... */                         // bare type name
+/** @throws when the id does not exist */                     // no type: documents `Error`
+```
+
+A tag without a recognizable type documents the base `Error`, which covers
+every `Error` subclass. Type names are compared without their namespace
+qualifier, so `@throws {JsonRpcError}` covers `throw new Jsonrpc.JsonRpcError()`.
 
 ## Muting with `@nothrow`
 
@@ -95,11 +124,13 @@ a directive applies relative to the line it is written on.
 
 ## Autofix
 
-`throwscript --fix` inserts the missing tags and then re-checks:
+`throwscript --fix` inserts the missing tags and re-checks, repeating until
+nothing fixable remains — documenting a callee makes its callers' tags
+incomplete in turn, so a call chain converges over a few rounds:
 
 - a function with an existing JSDoc block gets `* @throws {Type}` lines
-  appended before the closing `*/` (single-line `/** ... */` blocks are broken
-  open)
+  appended before the closing `*/` (a single-line `/** desc */` is rebuilt as
+  a block with the description on its own line)
 - a function without JSDoc gets a fresh block above the declaration — for
   arrow functions assigned to a variable, above the variable statement —
   matching the surrounding indentation
@@ -108,6 +139,43 @@ Only missing-`@throws` errors are auto-fixed; unused-tag warnings are left for
 a human to judge. Fixes are skipped for declarations that do not start their
 own line (e.g. inline callbacks), where a JSDoc block cannot be attached
 unambiguously.
+
+## Using the report with an LLM or a reviewer
+
+throwscript deliberately does not decide *how* a problem should be resolved:
+whether a throw is part of a function's contract (document it), an
+implementation detail the caller should never see (handle it), or a
+programmer-error guard (mute it) is a judgment call. `--format markdown`
+produces a self-contained report for whoever makes that call, human or model:
+
+```markdown
+## Missing `@throws`
+
+### packages/fs/src/read-json.ts
+
+- **'readJson'** (line 5) — add `@throws {SyntaxError}`
+  - line 6: propagates `SyntaxError` via `JSON.parse` (…/lib.es5.d.ts:1163) *(external)* — `JSON.parse(text)`
+
+### packages/rb-tree/src/map.ts
+
+- **'get'** (line 28) — add `@throws {Error}`
+  - line 31: throws `Error` — `throw new Error(`Key ${inspect(key)} not found.`)`
+```
+
+A workable loop for an agent:
+
+1. `throwscript --format markdown > report.md` and hand it over.
+2. For each function, the agent either edits the code so it no longer throws,
+   writes a `@throws {Type} when …` tag, or appends `// @nothrow` to a
+   deliberate guard.
+3. `throwscript` again — the remaining errors are the ones it left for
+   `--fix`, which inserts bare tags and repeats until callers of newly
+   documented functions are documented too.
+
+The same information is available programmatically: every `missing-throws`
+diagnostic carries `sites`, one entry per throw site with its `kind`
+(`throw` / `rethrow` / `call` / `reject`), source text, and — for propagated
+throws — the documented `callee` and where it is declared.
 
 ## What counts as "can throw"
 
@@ -122,6 +190,7 @@ unambiguously.
 | throw inside `try` with a `catch` clause | swallowed — nothing to document |
 | `throw error` rethrow in a `catch` block | propagates everything the `try` block could throw (or the `instanceof`-narrowed type) |
 | `foo().catch(...)` / `try { await foo() } catch` | rejection handled locally — nothing to document |
+| calling a `.d.ts`-documented function (`JSON.parse`, `fs.readFileSync`, …) | propagates its documented type; opt out with `--no-external` |
 
 A documented type covers a thrown type when the names match **or** the thrown
 type is assignable to it, so `@throws {Error}` covers `@throws {ValidationError}`
@@ -147,19 +216,31 @@ pnpm run check   # build + lint + test
 ## API
 
 ```ts
-import { analyzeFiles, analyzeProject, formatDiagnostic } from "@throwscript/core";
+import {
+  analyzeFiles,
+  analyzeProject,
+  formatDiagnostic,
+  formatReport,
+} from "@throwscript/core";
 
-const diagnostics = analyzeProject("tsconfig.json");
+const diagnostics = analyzeProject("tsconfig.json", {
+  ignoreExternal: true,
+  onConfigWarning: (message) => console.warn(message),
+});
 for (const d of diagnostics) {
   console.log(formatDiagnostic(d, process.cwd()));
 }
+console.log(formatReport(diagnostics, process.cwd())); // Markdown
 ```
 
 Each diagnostic carries `kind` (`missing-throws` | `unused-throws`), `severity`,
 `file`, `line`, `column`, `functionName`, the error `types` involved, a
-human-readable `message`, and — for fixable problems — a `fix` text edit.
-`applyFixes(diagnostics)` returns the patched file contents keyed by file name
-for the caller to write to disk.
+human-readable `message`, the throw `sites` (for `missing-throws`), and — for
+fixable problems — a `fix` text edit. `applyFixes(diagnostics)` returns the
+patched file contents keyed by file name for the caller to write to disk.
+
+Options: `reportUnused` (default `true`), `ignoreExternal` (default `false`),
+`fileFilter` (defaults to the project's / the given files), `onConfigWarning`.
 
 ## Known limitations
 

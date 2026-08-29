@@ -1,6 +1,6 @@
 {
   "name": "throwscript",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Linter-like checker: every function that can throw must document it with JSDoc @throws",
   "type": "module",
   "license": "MIT",
@@ -8,17 +8,22 @@
     "throwscript": "./dist/main.js"
   },
   "main": "./dist/main.js",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -b",
     "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
-    "@throwscript/core": "workspace:*",
-    "typescript": "^5.5.0"
+    "@throwscript/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "typescript": ">=5.5.0 <7"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "tsx": "^4.19.0"
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.3"
   }
 }
