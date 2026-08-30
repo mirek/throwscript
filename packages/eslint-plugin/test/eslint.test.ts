@@ -7,6 +7,15 @@ import tsParser from "@typescript-eslint/parser";
 import plugin from "../src/index.js";
 
 const fixturesDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
+// Under CI=true typescript-estree infers a "single run" and builds the program
+// once; every later parse of the same file falls back to an isolated, lib-less
+// program that cannot resolve anything. These tests lint the same file
+// repeatedly, so opt out (a real `eslint` CLI run parses each file once).
+const projectOptions = {
+  project: "./tsconfig.json",
+  tsconfigRootDir: fixturesDir,
+  disallowAutomaticSingleRunInference: true,
+};
 
 function createESLint(options: { fix?: boolean } = {}): ESLint {
   const config: Linter.Config[] = [
@@ -15,7 +24,7 @@ function createESLint(options: { fix?: boolean } = {}): ESLint {
       files: ["**/*.ts"],
       languageOptions: {
         parser: tsParser,
-        parserOptions: { project: "./tsconfig.json", tsconfigRootDir: fixturesDir },
+        parserOptions: { ...projectOptions },
       },
     },
   ];
@@ -113,7 +122,7 @@ test("ignoreExternal drops @throws documented in .d.ts files", async () => {
         plugins: { throwscript: plugin },
         languageOptions: {
           parser: tsParser,
-          parserOptions: { project: "./tsconfig.json", tsconfigRootDir: fixturesDir },
+          parserOptions: { ...projectOptions },
         },
         rules: { "throwscript/missing-throws": ["error", { ignoreExternal: true }] },
       },
@@ -140,6 +149,30 @@ test("--fix inserts the missing @throws tags", async () => {
     result.messages.map((m) => m.ruleId),
     ["throwscript/unused-throws"],
   );
+});
+
+test("recommended config applies only to TypeScript files", () => {
+  assert.deepEqual(plugin.configs.recommended.files, [
+    "**/*.ts",
+    "**/*.tsx",
+    "**/*.mts",
+    "**/*.cts",
+  ]);
+});
+
+test("a JavaScript file next to the config is left alone", async () => {
+  const eslint = new ESLint({
+    cwd: fixturesDir,
+    overrideConfigFile: true,
+    overrideConfig: [
+      plugin.configs.recommended,
+      { files: ["**/*.ts"], languageOptions: { parser: tsParser, parserOptions: projectOptions } },
+    ],
+  });
+  const [result] = await eslint.lintText("export function boom() {\n  throw new Error('x');\n}\n", {
+    filePath: path.join(fixturesDir, "plain.js"),
+  });
+  assert.deepEqual(result?.messages, []);
 });
 
 test("plugin exposes its meta and rules", () => {

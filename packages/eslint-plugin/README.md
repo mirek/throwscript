@@ -66,8 +66,10 @@ export default tseslint.config(
 ```
 
 `configs.recommended` enables `throwscript/missing-throws` as an error and
-`throwscript/unused-throws` as a warning. To pick severities or options
-yourself, register the plugin and set the rules directly:
+`throwscript/unused-throws` as a warning for `**/*.{ts,tsx,mts,cts}`. To pick
+severities, options, or files yourself, register the plugin and set the rules
+directly — keep them scoped to files the typed parser handles, since a file
+parsed without type information makes the rules throw:
 
 ```js
 export default [
@@ -83,6 +85,15 @@ export default [
 ```
 
 The package is ESM only; it requires ESLint 9 or newer (flat config).
+
+Prefer `projectService` over the legacy `project` option. With `project`,
+typescript-eslint builds the program once per process when it detects a
+one-shot run (`CI=true` or the `eslint` binary), and a *second* parse of the
+same file — the ESLint API linting a file twice, or `RuleTester` re-linting a
+fix's output — falls back to an isolated program with no type information, so
+cross-file and lib `@throws` are silently missed. The `eslint` CLI parses each
+file once (and `--fix` disables the one-shot mode), so it is unaffected; for
+programmatic use set `parserOptions.disallowAutomaticSingleRunInference: true`.
 
 ## Rules
 

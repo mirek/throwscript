@@ -17,13 +17,18 @@ const plugin = {
   },
   rules,
   configs: {} as {
-    /** Flat config: `missing-throws` as an error, `unused-throws` as a warning. */
+    /**
+     * Flat config: `missing-throws` as an error, `unused-throws` as a warning,
+     * for TypeScript files only — the rules need type information, which the
+     * default (Espree) parser cannot provide for `.js` files.
+     */
     recommended: Linter.Config;
   },
 } satisfies ESLint.Plugin;
 
 plugin.configs.recommended = {
   name: "throwscript/recommended",
+  files: ["**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts"],
   plugins: { throwscript: plugin },
   rules: {
     "throwscript/missing-throws": "error",

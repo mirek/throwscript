@@ -18,6 +18,11 @@ const ruleTester = new RuleTester({
     parserOptions: {
       project: "./tsconfig.json",
       tsconfigRootDir: fixturesDir,
+      // Under CI=true typescript-estree infers a "single run" and builds the
+      // program once; a second parse of the same file (RuleTester re-lints the
+      // fixed output) then falls back to an isolated, lib-less program that
+      // cannot resolve anything. Tests lint the same file repeatedly, so opt out.
+      disallowAutomaticSingleRunInference: true,
     },
   },
 });
