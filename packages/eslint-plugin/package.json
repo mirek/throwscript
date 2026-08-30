@@ -1,6 +1,6 @@
 {
   "name": "@mirek/eslint-plugin-throwscript",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "ESLint plugin: every function that can throw must document it with JSDoc @throws.",
   "keywords": [
     "throwscript",

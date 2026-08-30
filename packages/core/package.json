@@ -1,6 +1,6 @@
 {
   "name": "@mirek/throwscript-core",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Analyzer asserting every TypeScript function that can throw documents it with a JSDoc @throws tag.",
   "keywords": [
     "throwscript",
