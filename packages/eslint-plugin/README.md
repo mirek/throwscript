@@ -43,7 +43,7 @@ import tsParser from "@typescript-eslint/parser";
 export default [
   throwscript.configs.recommended,
   {
-    files: ["**/*.ts", "**/*.tsx"],
+    files: ["**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts"],
     languageOptions: {
       parser: tsParser,
       parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
@@ -66,7 +66,8 @@ export default tseslint.config(
 ```
 
 `configs.recommended` enables `throwscript/missing-throws` as an error and
-`throwscript/unused-throws` as a warning for `**/*.{ts,tsx,mts,cts}`. To pick
+`throwscript/unused-throws` as a warning for `**/*.{ts,tsx,mts,cts}` — keep
+the typed parser configured for those same files, as above. To pick
 severities, options, or files yourself, register the plugin and set the rules
 directly — keep them scoped to files the typed parser handles, since a file
 parsed without type information makes the rules throw:
@@ -74,7 +75,7 @@ parsed without type information makes the rules throw:
 ```js
 export default [
   {
-    files: ["**/*.ts"],
+    files: ["**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts"],
     plugins: { throwscript },
     rules: {
       "throwscript/missing-throws": ["error", { ignoreExternal: true }],

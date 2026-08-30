@@ -28,11 +28,17 @@ interface TypedParserServices {
 
 /**
  * Both rules run the analyzer over the same file during the same lint pass;
- * the result is computed once per source file and option set. Keyed on the
- * `ts.SourceFile` object so a re-parsed file (project service, watch mode)
- * gets fresh diagnostics and stale programs can be garbage collected.
+ * the result is computed once per program, source file, and option set. Keyed
+ * on the `ts.Program` first: a rebuilt program (project service, watch mode)
+ * can reuse an unchanged file's `ts.SourceFile` object even though a callee's
+ * `@throws` contract changed, so diagnostics cached against an old program
+ * must never be served. Old programs and re-parsed files are garbage
+ * collected together with their cache entries.
  */
-const cache = new WeakMap<ts.SourceFile, Map<string, ThrowsDiagnostic[]>>();
+const cache = new WeakMap<
+  ts.Program,
+  WeakMap<ts.SourceFile, Map<string, ThrowsDiagnostic[]>>
+>();
 
 /**
  * Diagnostics for the file being linted, of every kind; each rule picks the
@@ -58,10 +64,15 @@ export function getDiagnostics(
   if (sourceFile === undefined) return [];
 
   const key = String(options.ignoreExternal === true);
-  let byOptions = cache.get(sourceFile);
+  let byFile = cache.get(program);
+  if (byFile === undefined) {
+    byFile = new WeakMap();
+    cache.set(program, byFile);
+  }
+  let byOptions = byFile.get(sourceFile);
   if (byOptions === undefined) {
     byOptions = new Map();
-    cache.set(sourceFile, byOptions);
+    byFile.set(sourceFile, byOptions);
   }
   let diagnostics = byOptions.get(key);
   if (diagnostics === undefined) {

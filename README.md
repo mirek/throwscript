@@ -96,7 +96,7 @@ import tsParser from "@typescript-eslint/parser";
 export default [
   throwscript.configs.recommended, // missing-throws: error, unused-throws: warn
   {
-    files: ["**/*.ts"],
+    files: ["**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts"],
     languageOptions: {
       parser: tsParser,
       parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
