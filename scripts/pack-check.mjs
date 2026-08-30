@@ -1,7 +1,8 @@
 // Packs every workspace package and installs the tarballs into a throwaway
 // consumer project, then checks what a user would actually get: no
 // `workspace:` ranges leaked into the manifests, no source/test files in the
-// tarball, the `throwscript` bin runs, and the core package imports.
+// tarball, the `throwscript` bin runs, the core package imports, and the
+// eslint plugin reports through a real eslint run.
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
@@ -12,7 +13,7 @@ const pnpmCli = process.env.npm_execpath
 if (!pnpmCli) throw new Error('pack-check must be run through pnpm')
 
 const root = fileURLToPath(new URL('..', import.meta.url))
-const packageDirectories = ['packages/core', 'packages/cli'].map(p => path.join(root, p))
+const packageDirectories = ['packages/core', 'packages/cli', 'packages/eslint-plugin'].map(p => path.join(root, p))
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', ...options })
@@ -67,7 +68,12 @@ try {
     name: 'throwscript-consumer',
     private: true,
     type: 'module',
-    dependencies: { ...dependencies, typescript: '^5.9.3' }
+    dependencies: {
+      ...dependencies,
+      typescript: '^5.9.3',
+      eslint: '^10.9.1',
+      '@typescript-eslint/parser': '^8.68.0'
+    }
   }, null, 2))
   // Route the CLI's dependency on core to the local tarball as well.
   writeFileSync(
@@ -92,6 +98,24 @@ try {
       'if (d.length !== 1 || !formatReport(d).includes("boom")) throw new Error("core API check failed");\n'
   )
   run(process.execPath, ['api.mjs'], { cwd: consumer })
+
+  writeFileSync(path.join(consumer, 'tsconfig.json'), JSON.stringify({
+    compilerOptions: { strict: true, noEmit: true, skipLibCheck: true },
+    include: ['sample.ts']
+  }))
+  writeFileSync(
+    path.join(consumer, 'eslint.config.mjs'),
+    'import throwscript from "@mirek/eslint-plugin-throwscript";\n' +
+      'import tsParser from "@typescript-eslint/parser";\n' +
+      'export default [\n' +
+      '  throwscript.configs.recommended,\n' +
+      '  { files: ["**/*.ts"], languageOptions: { parser: tsParser, parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname } } },\n' +
+      '];\n'
+  )
+  const lint = spawnSync(process.execPath, [pnpmCli, 'exec', 'eslint', 'sample.ts'], { cwd: consumer, encoding: 'utf8' })
+  if (lint.status !== 1 || !/'boom' can throw \{Error\}.*throwscript\/missing-throws/.test(lint.stdout)) {
+    throw new Error(`eslint plugin did not report the sample throw (status ${lint.status}):\n${lint.stdout}${lint.stderr}`)
+  }
   console.log('pack-check ok')
 } finally {
   rmSync(temporaryDirectory, { recursive: true, force: true })

@@ -7,13 +7,14 @@ uniquely named files never conflict between concurrent pull requests. Format:
 ---
 "@mirek/throwscript-core": minor
 "@mirek/throwscript-cli": minor
+"@mirek/eslint-plugin-throwscript": minor
 ---
 
 One-line summary of the change.
 ```
 
-The two packages are released in lockstep (`fixed` in `config.json`): naming either one
-bumps both to the same version. Pick the bump the change needs:
+All packages are released in lockstep (`fixed` in `config.json`): naming any of them
+bumps all to the same version. Pick the bump the change needs:
 
 - `patch` — fixes and documentation;
 - `minor` — new features;

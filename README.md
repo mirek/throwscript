@@ -78,6 +78,35 @@ throwscript uses the `typescript` package installed in your project (any
 5.5+ or 6.x release); tsconfig options this compiler does not understand are
 printed as warnings and the analysis proceeds, as `tsc` would.
 
+## ESLint plugin
+
+The same analysis is available as ESLint rules, so problems show up in the
+editor and `eslint --fix` inserts the tags. The rules need typed linting
+(`@typescript-eslint/parser` with `parserOptions.projectService`):
+
+```sh
+pnpm add -D @mirek/eslint-plugin-throwscript @typescript-eslint/parser
+```
+
+```js
+// eslint.config.js
+import throwscript from "@mirek/eslint-plugin-throwscript";
+import tsParser from "@typescript-eslint/parser";
+
+export default [
+  throwscript.configs.recommended, // missing-throws: error, unused-throws: warn
+  {
+    files: ["**/*.ts"],
+    languageOptions: {
+      parser: tsParser,
+      parserOptions: { projectService: true, tsconfigRootDir: import.meta.dirname },
+    },
+  },
+];
+```
+
+See the [plugin README](packages/eslint-plugin#readme) for rule options.
+
 ## Accepted `@throws` forms
 
 ```ts
@@ -207,6 +236,7 @@ subclasses.
 | --- | --- |
 | [`@mirek/throwscript-core`](packages/core) | The analyzer: walks a `ts.Program` and returns structured diagnostics |
 | [`@mirek/throwscript-cli`](packages/cli) | The `throwscript` command-line tool |
+| [`@mirek/eslint-plugin-throwscript`](packages/eslint-plugin) | The same checks as ESLint rules (`throwscript/missing-throws`, `throwscript/unused-throws`) |
 
 ## Development
 

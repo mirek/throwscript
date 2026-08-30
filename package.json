@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc -b packages/core packages/cli",
+    "build": "tsc -b packages/core packages/cli packages/eslint-plugin",
     "lint": "oxlint .",
     "test": "pnpm run build && pnpm -r run test",
     "pack:check": "node scripts/pack-check.mjs",
