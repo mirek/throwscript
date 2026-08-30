@@ -1,0 +1,61 @@
+{
+  "name": "@mirek/eslint-plugin-throwscript",
+  "version": "0.5.0",
+  "description": "ESLint plugin: every function that can throw must document it with JSDoc @throws.",
+  "keywords": [
+    "throwscript",
+    "throws",
+    "jsdoc",
+    "typescript",
+    "eslint",
+    "eslint-plugin",
+    "eslintplugin",
+    "exceptions",
+    "errors"
+  ],
+  "author": "Mirek Rusin (https://github.com/mirek)",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@mirek/throwscript-core": "workspace:*"
+  },
+  "peerDependencies": {
+    "eslint": ">=9.0.0",
+    "typescript": ">=5.5.0 <7"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@typescript-eslint/parser": "^8.68.0",
+    "eslint": "^10.9.1",
+    "tsx": "^4.19.0",
+    "typescript": "^5.9.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mirek/throwscript.git",
+    "directory": "packages/eslint-plugin"
+  },
+  "homepage": "https://github.com/mirek/throwscript/tree/main/packages/eslint-plugin#readme",
+  "bugs": "https://github.com/mirek/throwscript/issues"
+}
